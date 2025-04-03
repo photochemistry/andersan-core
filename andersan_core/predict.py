@@ -1,5 +1,3 @@
-# andersanのデータ取得関数群。APIに必要なもののみ集約する。
-
 import datetime
 from datetime import timedelta
 from logging import getLogger, basicConfig, INFO, DEBUG
@@ -18,12 +16,9 @@ class InvalidForecastingRangeError(Exception):
     """予報可能な時間範囲を越える場合に発生する例外"""
 
     pass
-    # def __init__(self, message):
-    #     self.message = message
-    #     super().__init__(message)
 
 
-def X_openmeteo(
+def _prepare_data_for_nn(
     pref_name: str,
     isodatehour: str,
     zoom: int = 12,
@@ -37,24 +32,22 @@ def X_openmeteo(
         "shortwave_radiation",
         "wind_speed_10m",
     ),
-    stdfilename="standards.json",
     openweathermap=False,
-) -> np.ndarray:
-    """NNの入力データXを構築する。
+) -> dict:
+    """NNに入力する前のデータ準備を行う。
 
     Args:
         pref_name (str): 県名(半角ローマ字)
         isodatehour (str): 目的の日時
         zoom (int): 地理院タイルのレベル。12を想定。
-        lookback (int, optional): 24を指定すると23時間前〜現在の大気測定値を利用. Defaults to 24.
-        forecast (int, optional): 8を指定すると1時間先〜8時間先までの気象予報情報を利用_description_. Defaults to 8.
-        items (tuple, optional): 大気測定項目. Defaults to ("NMHC", "OX", "NOX", "TEMP", "WX", "WY").
-        noaa_cols (tuple, optional): 気象予報項目. Defaults to ( "temperature_2m", "cloud_cover", "pressure_msl", "shortwave_radiation", "wind_speed_10m", ).
-        stdfilename (str, optional): 各項目を標準化するための係数の情報のとりこみ. Defaults to "standards.json".
+        lookback_length (int, optional): 24を指定すると23時間前〜現在の大気測定値を利用. Defaults to 24.
+        forecast_length (int, optional): 8を指定すると1時間先〜8時間先までの気象予報情報を利用_description_. Defaults to 8.
+        cols_lookbacks (tuple, optional): 大気測定項目. Defaults to ("NMHC", "OX", "NOX", "TEMP", "WX", "WY").
+        cols_forecasts (tuple, optional): 気象予報項目. Defaults to ( "temperature_2m", "cloud_cover", "pressure_msl", "shortwave_radiation", "wind_speed_10m", ).
         openweathermap (bool): OWMから予報値を入手する。いくつか条件を満たす場合に限り利用可能。
 
     Returns:
-        _type_: _description_
+        dict: NNへの入力データX0, X2, X3とtimeoriginを含む辞書
     """
     logger = getLogger()
 
@@ -83,14 +76,14 @@ def X_openmeteo(
     missing_newest = False
     for delta in range(-lookback_length + 1, 1):
         dt = timeorigin + timedelta(hours=delta)
-        table = airmonitor.tiles("kanagawa", dt.isoformat(), zoom)
+        table = airmonitor.tiles(pref_name, dt.isoformat(), zoom)
         if table is None:
             ic(f"TimeDelta={delta}")
         if delta == 0 and table is None:
             # 最新データを取得しそこねた
             # 代わりに、24時間前のデータを取得
             dt = timeorigin + timedelta(hours=-lookback_length)
-            table = airmonitor.tiles("kanagawa", dt.isoformat(), zoom)
+            table = airmonitor.tiles(pref_name, dt.isoformat(), zoom)
             # air_tableの先頭にくっつける
             air_table = pd.concat([table, air_table], axis=0)
             missing_newest = True
@@ -108,7 +101,7 @@ def X_openmeteo(
     # forecast値の読みこみ
     timebegin = timeorigin + timedelta(hours=1)
     all_forecast_dataframe = openmeteo.tiles(
-        "kanagawa",
+        pref_name,
         datehour=timebegin.strftime("%Y-%m-%dT%H"),
         hours=forecast_length,
         zoom=zoom,
@@ -137,16 +130,29 @@ def X_openmeteo(
             (all_forecast_dataframe.X == tileX) & (all_forecast_dataframe.Y == tileY)
         ]["weather_code"]
 
-    X = {
+    logger.info(X0.shape)
+    logger.info(X2.shape)
+    logger.info(X3.shape)
+
+    return {
         "Input_lookbacks": X0,
         "Input_forecasts": X2,
         "Input_weathercodes": X3,
         "timeorigin": timeorigin,
     }
-    logger.info(X0.shape)
-    logger.info(X2.shape)
-    logger.info(X3.shape)
 
+
+def _standardize_data(X: dict, stdfilename: str) -> dict:
+    """データを標準化する。
+
+    Args:
+        X (dict): 標準化前のデータ
+        stdfilename (str): 標準化係数ファイル名
+
+    Returns:
+        dict: 標準化後のデータ
+    """
+    logger = getLogger()
     logger.info(f"Standardization with {stdfilename}")
 
     with open(stdfilename) as f:
@@ -158,6 +164,53 @@ def X_openmeteo(
             std = specs[label][icol]["std"]
             X[label][:, :, icol] = (X[label][:, :, icol] - average) / std
 
+    return X
+
+
+def X_openmeteo(
+    pref_name: str,
+    isodatehour: str,
+    zoom: int = 12,
+    lookback_length: int = 24,
+    forecast_length: int = 8,
+    cols_lookbacks=("NMHC", "OX", "NOX", "TEMP", "WX", "WY"),
+    cols_forecasts=(
+        "temperature_2m",
+        "cloud_cover",
+        "pressure_msl",
+        "shortwave_radiation",
+        "wind_speed_10m",
+    ),
+    stdfilename="standards.json",
+    openweathermap=False,
+) -> dict:
+    """NNの入力データXを構築する。
+
+    Args:
+        pref_name (str): 県名(半角ローマ字)
+        isodatehour (str): 目的の日時
+        zoom (int): 地理院タイルのレベル。12を想定。
+        lookback_length (int, optional): 24を指定すると23時間前〜現在の大気測定値を利用. Defaults to 24.
+        forecast_length (int, optional): 8を指定すると1時間先〜8時間先までの気象予報情報を利用_description_. Defaults to 8.
+        cols_lookbacks (tuple, optional): 大気測定項目. Defaults to ("NMHC", "OX", "NOX", "TEMP", "WX", "WY").
+        cols_forecasts (tuple, optional): 気象予報項目. Defaults to ( "temperature_2m", "cloud_cover", "pressure_msl", "shortwave_radiation", "wind_speed_10m", ).
+        stdfilename (str, optional): 各項目を標準化するための係数の情報のとりこみ. Defaults to "standards.json".
+        openweathermap (bool): OWMから予報値を入手する。いくつか条件を満たす場合に限り利用可能。
+
+    Returns:
+        dict: 標準化されたNNへの入力データX0, X2, X3とtimeoriginを含む辞書
+    """
+    X = _prepare_data_for_nn(
+        pref_name,
+        isodatehour,
+        zoom,
+        lookback_length,
+        forecast_length,
+        cols_lookbacks,
+        cols_forecasts,
+        openweathermap,
+    )
+    X = _standardize_data(X, stdfilename)
     return X
 
 
