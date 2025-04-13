@@ -1,0 +1,6 @@
+airmonitor
+openmeteo
+archive_airmonitor
+archive_openmeteo
+*.lock
+*.pyc

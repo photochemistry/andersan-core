@@ -7,6 +7,13 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
+pytz = "^2025.2"
+pandas = "^2.2.3"
+keras = "^3.9.2"
+tensorflow = "^2.16.1"
+andersan = {path = "../andersan"}
+icecream = "^2.1.4"
+pyarrow = "^19.0.1"
 
 
 [build-system]
